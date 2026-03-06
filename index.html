@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mortgage Conditions Email Generator</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";</script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f4f6f9; color: #1a2a3a; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useCallback, useRef } = React;
+
+    /* ------------------------------------------------------------------ */
+    /*  FILE READING HELPER                                               */
+    /* ------------------------------------------------------------------ */
+    function readFileAsText(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target.result);
+        reader.onerror = () => reject(new Error("Failed to read file."));
+        reader.readAsText(file);
+      });
+    }
+
+    function readPdfAsText(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          try {
+            const typedArray = new Uint8Array(e.target.result);
+            const pdf = await pdfjsLib.getDocument({ data: typedArray }).promise;
+            const pages = [];
+            for (let i = 1; i <= pdf.numPages; i++) {
+              const page = await pdf.getPage(i);
+              const content = await page.getTextContent();
+              const text = content.items.map((item) => item.str).join(" ");
+              pages.push(text);
+            }
+            resolve(pages.join("\n\n"));
+          } catch (err) {
+            reject(new Error("Could not parse PDF: " + err.message));
+          }
+        };
+        reader.onerror = () => reject(new Error("Failed to read file."));
+        reader.readAsArrayBuffer(file);
+      });
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  MOCK AI RESPONSE — used when no real API is wired up              */
+    /* ------------------------------------------------------------------ */
+    const MOCK_RESPONSE = {
+      conditions: [
+        { id: 1, description: "Provide most recent 2 months of bank statements for Chase checking account ending in 4821", party: "Borrower", reasoning: "Personal financial document that only the borrower can supply." },
+        { id: 2, description: "Provide written letter of explanation for credit inquiry from Capital One dated 01/15/2026", party: "Borrower", reasoning: "Only the borrower can explain their own credit activity." },
+        { id: 3, description: "Provide most recent pay stub dated within 30 days of closing", party: "Borrower", reasoning: "Employment documentation that must come from borrower." },
+        { id: 4, description: "Provide copy of the executed contract extension reflecting the new closing date of 03/25/2026", party: "Agent", reasoning: "Contract modifications are handled through the real estate agent." },
+        { id: 5, description: "Provide updated seller credit addendum reflecting $4,500 seller concession", party: "Agent", reasoning: "Seller credits and contract addenda are negotiated through the agent." },
+        { id: 6, description: "Order updated VOE (Verification of Employment) for borrower's current employer", party: "Processor", reasoning: "Internal verification ordering is a processor task." },
+        { id: 7, description: "Follow up with title company for updated title commitment reflecting lien payoff", party: "Processor", reasoning: "Title/escrow coordination is handled internally by the processor." },
+        { id: 8, description: "Provide HOA dues statement showing current payment status", party: "Borrower", reasoning: "HOA statement is a personal document the borrower must request from their HOA." },
+        { id: 9, description: "Obtain termite inspection clearance letter", party: "Agent", reasoning: "Property inspection access and reports are coordinated through the agent." },
+        { id: 10, description: "Clear MERS registration and update loan number in system", party: "Processor", reasoning: "Internal system updates are processor responsibilities." },
+      ],
+      internal_summary: [
+        "4 items assigned to Borrower — bank statements, pay stub, LOE for credit inquiry, and HOA statement.",
+        "3 items assigned to Agent — contract extension, seller credit addendum, and termite inspection.",
+        "3 items assigned to Processor — VOE ordering, title follow-up, and MERS registration.",
+        "Contract extension and seller credit addendum should be requested together from the agent to avoid multiple touchpoints.",
+        "Pay stub must be dated within 30 days of closing (03/25/2026) — time-sensitive.",
+        "No ambiguous assignments; all items clearly fall within one party's responsibility.",
+      ],
+      emails: {
+        borrower: {
+          skip: false,
+          subject: "Re: Your Mortgage Conditions — Action Items Needed",
+          body: "Hi Sarah,\n\nThank you for your patience as we work through the final steps of your loan approval. The underwriter has come back with a few items we'll need from you to keep things moving smoothly.\n\nHere's what we need:\n\n- Most recent 2 months of bank statements for your Chase checking account ending in 4821\n- A written letter of explanation for the credit inquiry from Capital One dated 01/15/2026 (just a brief note explaining the reason for the inquiry)\n- Your most recent pay stub (must be dated within 30 days of our closing date, 03/25/2026)\n- HOA dues statement showing your current payment status\n\nPlease send these items at your earliest convenience so we can stay on track for closing. If you have any questions about any of these items, don't hesitate to reach out.\n\nThank you!\n"
+        },
+        agent: {
+          skip: false,
+          subject: "Re: Mortgage Conditions — Contract & Inspection Items",
+          body: "Hi Jamie,\n\nHope you're doing well! We have a few items from the underwriter that we'll need your help with:\n\n- Executed contract extension reflecting the new closing date of 03/25/2026\n- Updated seller credit addendum reflecting the $4,500 seller concession\n- Termite inspection clearance letter\n\nIf you could send these over as soon as they're available, that would be great. We want to make sure we stay on schedule for closing.\n\nThanks so much!\n"
+        },
+        processor: {
+          skip: false,
+          subject: "Re: Mortgage Conditions — Internal Tasks",
+          body: "Hi Alex,\n\nHere are the internal items we need to take care of from the latest conditions list:\n\n- Order updated VOE (Verification of Employment) for borrower's current employer\n- Follow up with title company for updated title commitment reflecting lien payoff\n- Clear MERS registration and update loan number in system\n\nThe contract extension and seller credit addendum have been requested from the agent. Pay stub from borrower is time-sensitive (must be within 30 days of 03/25 closing).\n\nPlease prioritize the VOE and title follow-up. Let me know if you run into any issues.\n\nThanks!\n"
+        }
+      }
+    };
+
+    /* ------------------------------------------------------------------ */
+    /*  STYLES                                                            */
+    /* ------------------------------------------------------------------ */
+    const S = {
+      app: { minHeight: "100vh", background: "#f4f6f9" },
+      header: { background: "linear-gradient(135deg, #0f2b46 0%, #1a3f66 100%)", color: "#fff", padding: "20px 32px", display: "flex", alignItems: "center", gap: 12 },
+      headerTitle: { fontSize: 22, fontWeight: 700, letterSpacing: "-0.3px" },
+      headerSub: { fontSize: 13, opacity: 0.75, marginTop: 2 },
+      layout: { display: "flex", gap: 28, padding: "28px 32px", maxWidth: 1400, margin: "0 auto", flexWrap: "wrap" },
+      formCol: { flex: "0 0 420px", minWidth: 320 },
+      outputCol: { flex: 1, minWidth: 400 },
+      card: { background: "#fff", borderRadius: 10, boxShadow: "0 1px 4px rgba(0,0,0,0.08)", padding: "24px 28px", marginBottom: 20 },
+      cardTitle: { fontSize: 16, fontWeight: 700, color: "#0f2b46", marginBottom: 16, paddingBottom: 10, borderBottom: "2px solid #e8ecf1" },
+      label: { display: "block", fontSize: 13, fontWeight: 600, color: "#3a4a5c", marginBottom: 5 },
+      input: { width: "100%", padding: "9px 12px", border: "1px solid #cfd7e0", borderRadius: 6, fontSize: 14, outline: "none", transition: "border 0.2s" },
+      textarea: { width: "100%", padding: "9px 12px", border: "1px solid #cfd7e0", borderRadius: 6, fontSize: 14, outline: "none", minHeight: 100, resize: "vertical", fontFamily: "inherit" },
+      fieldGroup: { marginBottom: 16 },
+      row: { display: "flex", gap: 12 },
+      btn: { background: "linear-gradient(135deg, #1a5fa8 0%, #1a3f66 100%)", color: "#fff", border: "none", borderRadius: 8, padding: "12px 24px", fontSize: 15, fontWeight: 600, cursor: "pointer", width: "100%", transition: "opacity 0.2s" },
+      btnDisabled: { opacity: 0.55, cursor: "not-allowed" },
+      error: { color: "#c0392b", fontSize: 12, marginTop: 4, fontWeight: 500 },
+      warning: { background: "#fef9e7", border: "1px solid #f0e0a0", borderRadius: 6, padding: "10px 14px", fontSize: 13, color: "#7d6608", marginBottom: 16 },
+      tabs: { display: "flex", gap: 0, borderBottom: "2px solid #e8ecf1", marginBottom: 20 },
+      tab: (active) => ({ padding: "10px 20px", fontSize: 14, fontWeight: active ? 700 : 500, color: active ? "#1a5fa8" : "#6b7c8d", borderBottom: active ? "3px solid #1a5fa8" : "3px solid transparent", cursor: "pointer", background: "none", border: "none", borderBottomStyle: "solid", marginBottom: -2, transition: "all 0.15s" }),
+      badge: (party) => {
+        const colors = { Borrower: { bg: "#e8f0fe", color: "#1a5fa8" }, Agent: { bg: "#e6f7ed", color: "#1a7a42" }, Processor: { bg: "#fef0e0", color: "#b86e00" } };
+        const c = colors[party] || { bg: "#eee", color: "#333" };
+        return { display: "inline-block", padding: "3px 10px", borderRadius: 12, fontSize: 12, fontWeight: 700, background: c.bg, color: c.color };
+      },
+      table: { width: "100%", borderCollapse: "collapse", fontSize: 14 },
+      th: { textAlign: "left", padding: "10px 12px", background: "#f4f6f9", fontWeight: 700, color: "#3a4a5c", fontSize: 12, textTransform: "uppercase", letterSpacing: 0.5 },
+      td: { padding: "10px 12px", borderBottom: "1px solid #eef1f5", verticalAlign: "top" },
+      emailCard: { background: "#f9fafc", border: "1px solid #e4e8ee", borderRadius: 8, padding: "18px 20px", marginBottom: 16 },
+      emailLabel: { fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 },
+      emailSubject: { fontSize: 14, fontWeight: 600, color: "#1a2a3a", marginBottom: 10, background: "#fff", padding: "8px 12px", borderRadius: 5, border: "1px solid #e4e8ee" },
+      emailBody: { whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.65, background: "#fff", padding: "14px 16px", borderRadius: 5, border: "1px solid #e4e8ee", fontFamily: "'SF Mono', 'Menlo', 'Consolas', monospace", maxHeight: 360, overflowY: "auto" },
+      copyBtn: { background: "#e8ecf1", border: "none", borderRadius: 5, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", color: "#3a4a5c", marginTop: 10, transition: "background 0.15s" },
+      spinner: { display: "inline-block", width: 18, height: 18, border: "3px solid rgba(255,255,255,0.3)", borderTop: "3px solid #fff", borderRadius: "50%", animation: "spin 0.8s linear infinite", marginRight: 8, verticalAlign: "middle" },
+      codeBlock: { background: "#1a2a3a", color: "#a8d8a8", padding: "16px 20px", borderRadius: 8, fontSize: 12, fontFamily: "'SF Mono', 'Menlo', 'Consolas', monospace", whiteSpace: "pre-wrap", maxHeight: 500, overflowY: "auto", lineHeight: 1.6 },
+      skipBadge: { display: "inline-block", background: "#e8ecf1", color: "#6b7c8d", padding: "6px 14px", borderRadius: 6, fontSize: 13, fontWeight: 600 },
+      summaryList: { listStyle: "none", padding: 0 },
+      summaryItem: { padding: "8px 0", borderBottom: "1px solid #eef1f5", fontSize: 14, paddingLeft: 16, position: "relative" },
+    };
+
+    /* ------------------------------------------------------------------ */
+    /*  PROMPT BUILDERS                                                   */
+    /* ------------------------------------------------------------------ */
+    function buildSystemPrompt() {
+      return `You are an AI assistant for a mortgage company that automates conditions emails.
+You will receive:
+- The text content extracted from a mortgage conditions file
+  (e.g., PDF, DOCX, email export), and/or
+- Additional pasted conditions text,
+- Plus party names and special instructions.
+
+You must read all the provided conditions content as your primary source.
+
+Your job:
+1. Read the entire conditions content from the referenced attachment, plus any additional
+   pasted text, even if the file has formatting artifacts.
+2. Break it into individual, discrete action items — each describing one specific task,
+   document, or confirmation required.
+3. Assign each action item to EXACTLY ONE party:
+   - BORROWER: personal documents, bank statements, pay stubs, HOA statements, tax returns,
+     employment verification, explanations of credit inquiries, any item the borrower must
+     personally provide.
+   - AGENT: contract changes, extensions, addenda, seller credits, property access,
+     inspection reports, anything tied to purchase contract negotiations.
+   - PROCESSOR: internal lender follow-up, ordering verifications, clearing internal
+     conditions, title/escrow coordination, appraisal follow-up, internal tasks.
+4. If responsibility is ambiguous, pick the most reasonable party and note your reasoning.
+   If it could materially change the email, flag it for review.
+5. Then draft three separate emails: one for the Borrower, one for the Agent, and one for
+   the Processor (internal).
+
+REQUIRED OUTPUT FORMAT — return valid JSON only, no markdown fences, no extra text:
+{
+  "conditions": [
+    {
+      "id": 1,
+      "description": "Clear, concise description of the action item",
+      "party": "Borrower" | "Agent" | "Processor",
+      "reasoning": "One sentence explanation of why this party is responsible"
+    }
+  ],
+  "internal_summary": [
+    "Bullet point 1 summarizing key tasks, dependencies, urgency, or unclear items",
+    "Bullet point 2...",
+    "Up to 6 bullet points total"
+  ],
+  "emails": {
+    "borrower": {
+      "skip": false,
+      "subject": "Re: Mortgage Conditions",
+      "body": "Full email body text with \\n for line breaks and - for bullets"
+    },
+    "agent": {
+      "skip": false,
+      "subject": "Re: Mortgage Conditions",
+      "body": "Full email body text"
+    },
+    "processor": {
+      "skip": false,
+      "subject": "Re: Mortgage Conditions - Internal Tasks",
+      "body": "Full email body text"
+    }
+  }
+}`;
+    }
+
+    function buildUserMessage(form) {
+      return `Borrower Name: ${form.borrower_name}
+Agent Name: ${form.agent_name || "Not provided"}
+Processor Name: ${form.processor_name || "Not provided"}
+Special Instructions: ${form.special_instructions || "None"}
+
+Uploaded File: ${form.uploadedFileName || "None"}
+
+--- BEGIN FILE CONTENTS ---
+${form.uploadedFileContent || "(No file content extracted)"}
+--- END FILE CONTENTS ---
+
+Additional Pasted Conditions Text (optional):
+${form.conditions_text || "None provided"}`;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  CALL AI — replace mock with real Anthropic SDK call                */
+    /* ------------------------------------------------------------------ */
+    async function callAI(form) {
+      /*
+       * ============================================================
+       * TO WIRE UP A REAL API CALL:
+       * ============================================================
+       * import Anthropic from '@anthropic-ai/sdk';
+       * const client = new Anthropic({ apiKey: 'YOUR_KEY' });
+       *
+       * const response = await client.messages.create({
+       *   model: "claude-sonnet-4-5-20250514",
+       *   max_tokens: 4096,
+       *   system: buildSystemPrompt(),
+       *   messages: [{ role: "user", content: buildUserMessage(form) }],
+       * });
+       *
+       * const text = response.content[0].text;
+       * return JSON.parse(text);
+       * ============================================================
+       */
+
+      // MOCK: simulate network delay then return mock data
+      await new Promise((r) => setTimeout(r, 1800));
+
+      // Personalize the mock response with actual form names
+      const res = JSON.parse(JSON.stringify(MOCK_RESPONSE));
+      const bName = form.borrower_name || "there";
+      const aName = form.agent_name || "there";
+      const pName = form.processor_name || "there";
+
+      res.emails.borrower.body = res.emails.borrower.body.replace("Hi Sarah", `Hi ${bName}`);
+      res.emails.agent.body = res.emails.agent.body.replace("Hi Jamie", `Hi ${aName}`);
+      res.emails.processor.body = res.emails.processor.body.replace("Hi Alex", `Hi ${pName}`);
+
+      return res;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  COPY HELPER                                                       */
+    /* ------------------------------------------------------------------ */
+    function CopyButton({ text }) {
+      const [copied, setCopied] = useState(false);
+      const handleCopy = useCallback(() => {
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        });
+      }, [text]);
+      return (
+        <button style={S.copyBtn} onClick={handleCopy}>
+          {copied ? "Copied!" : "Copy to Clipboard"}
+        </button>
+      );
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  MAIN APP                                                          */
+    /* ------------------------------------------------------------------ */
+    function App() {
+      const [form, setForm] = useState({
+        uploadedFileName: "",
+        uploadedFileContent: "",
+        conditions_text: "",
+        borrower_name: "",
+        agent_name: "",
+        processor_name: "",
+        special_instructions: "",
+      });
+      const [errors, setErrors] = useState({});
+      const [showWarning, setShowWarning] = useState(false);
+      const [isLoading, setIsLoading] = useState(false);
+      const [isFileLoading, setIsFileLoading] = useState(false);
+      const [error, setError] = useState(null);
+      const [result, setResult] = useState(null);
+      const [activeTab, setActiveTab] = useState(0);
+      const fileInputRef = useRef(null);
+
+      const updateField = useCallback((field, value) => {
+        setForm((prev) => ({ ...prev, [field]: value }));
+        setErrors((prev) => ({ ...prev, [field]: undefined }));
+        setResult(null);
+        setError(null);
+      }, []);
+
+      const handleFileUpload = useCallback(async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        setErrors((prev) => ({ ...prev, uploadedFile: undefined }));
+        setResult(null);
+        setError(null);
+        setIsFileLoading(true);
+
+        const name = file.name;
+        const ext = name.split(".").pop().toLowerCase();
+
+        try {
+          let content = "";
+
+          if (["txt", "eml", "msg", "csv", "html", "htm", "rtf", "json", "xml"].includes(ext)) {
+            content = await readFileAsText(file);
+          } else if (ext === "docx") {
+            // DOCX files are ZIP archives — extract the raw XML text
+            content = await readFileAsText(file);
+            // Strip XML tags to get readable text
+            content = content.replace(/<[^>]+>/g, " ").replace(/\s{2,}/g, " ").trim();
+            if (content.length < 50) {
+              content = "(DOCX parsing limited in browser. Please also paste the conditions text below for best results.)\n\nRaw extract:\n" + content;
+            }
+          } else if (ext === "pdf") {
+            content = await readPdfAsText(file);
+          } else {
+            // Try reading as text for any other file type
+            content = await readFileAsText(file);
+          }
+
+          setForm((prev) => ({
+            ...prev,
+            uploadedFileName: name,
+            uploadedFileContent: content,
+          }));
+        } catch (err) {
+          setErrors((prev) => ({ ...prev, uploadedFile: "Could not read file. Try pasting the text instead." }));
+        } finally {
+          setIsFileLoading(false);
+        }
+      }, []);
+
+      const handleRemoveFile = useCallback(() => {
+        setForm((prev) => ({ ...prev, uploadedFileName: "", uploadedFileContent: "" }));
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        setResult(null);
+        setError(null);
+      }, []);
+
+      const validate = useCallback(() => {
+        const e = {};
+        if (!form.uploadedFileName && !form.conditions_text.trim()) {
+          e.uploadedFile = "Please upload a conditions file or paste conditions text.";
+        }
+        if (!form.borrower_name.trim()) e.borrower_name = "Borrower name is required.";
+        setErrors(e);
+        setShowWarning(!form.agent_name.trim() && !form.processor_name.trim());
+        return Object.keys(e).length === 0;
+      }, [form]);
+
+      const handleSubmit = useCallback(async () => {
+        if (!validate()) return;
+        setIsLoading(true);
+        setError(null);
+        setResult(null);
+        try {
+          const data = await callAI(form);
+          setResult(data);
+          setActiveTab(0);
+        } catch (err) {
+          setError(err.message || "An unexpected error occurred.");
+        } finally {
+          setIsLoading(false);
+        }
+      }, [form, validate]);
+
+      const tabLabels = ["Conditions", "Summary", "Emails"];
+
+      return (
+        <div style={S.app}>
+          {/* Spinner keyframes */}
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+
+          {/* Header */}
+          <div style={S.header}>
+            <div>
+              <div style={S.headerTitle}>Mortgage Conditions Email Generator</div>
+              <div style={S.headerSub}>Parse conditions, assign tasks, draft emails — powered by AI</div>
+            </div>
+          </div>
+
+          {/* Layout */}
+          <div style={S.layout}>
+            {/* ---------- LEFT: FORM ---------- */}
+            <div style={S.formCol}>
+              {/* Section 1: Conditions Source */}
+              <div style={S.card}>
+                <div style={S.cardTitle}>Conditions Source</div>
+
+                {/* File Upload */}
+                <div style={S.fieldGroup}>
+                  <label style={S.label}>Upload Conditions File</label>
+                  {!form.uploadedFileName ? (
+                    <div
+                      style={{
+                        border: `2px dashed ${errors.uploadedFile ? "#c0392b" : "#cfd7e0"}`,
+                        borderRadius: 8,
+                        padding: "28px 16px",
+                        textAlign: "center",
+                        cursor: "pointer",
+                        background: "#fafbfc",
+                        transition: "border-color 0.2s",
+                      }}
+                      onClick={() => fileInputRef.current && fileInputRef.current.click()}
+                    >
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".pdf,.docx,.doc,.txt,.eml,.msg,.csv,.html,.htm,.rtf,.json,.xml"
+                        style={{ display: "none" }}
+                        onChange={handleFileUpload}
+                      />
+                      {isFileLoading ? (
+                        <div style={{ color: "#1a5fa8", fontWeight: 600, fontSize: 14 }}>
+                          <span style={{ ...S.spinner, borderColor: "rgba(26,95,168,0.2)", borderTopColor: "#1a5fa8" }} />
+                          Reading file...
+                        </div>
+                      ) : (
+                        <>
+                          <div style={{ fontSize: 28, marginBottom: 6, color: "#8a9ab5" }}>&#128196;</div>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: "#3a4a5c" }}>Click to upload a file</div>
+                          <div style={{ fontSize: 12, color: "#8a9ab5", marginTop: 4 }}>PDF, DOCX, TXT, EML, HTML, and more</div>
+                        </>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 10,
+                      background: "#e8f0fe", border: "1px solid #b8d4fe", borderRadius: 8,
+                      padding: "10px 14px",
+                    }}>
+                      <span style={{ fontSize: 20 }}>&#128196;</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: "#1a3f66" }}>{form.uploadedFileName}</div>
+                        <div style={{ fontSize: 12, color: "#5a7a9a" }}>
+                          {form.uploadedFileContent.length > 0
+                            ? `${Math.round(form.uploadedFileContent.length / 1024)}KB of text extracted`
+                            : "File loaded"}
+                        </div>
+                      </div>
+                      <button
+                        onClick={handleRemoveFile}
+                        style={{
+                          background: "none", border: "none", cursor: "pointer",
+                          fontSize: 18, color: "#6b7c8d", padding: "4px 8px", borderRadius: 4,
+                        }}
+                        title="Remove file"
+                      >&#10005;</button>
+                    </div>
+                  )}
+                  {errors.uploadedFile && <div style={S.error}>{errors.uploadedFile}</div>}
+                </div>
+
+                {/* Divider with "or" */}
+                <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "4px 0 16px" }}>
+                  <div style={{ flex: 1, height: 1, background: "#e0e5ec" }} />
+                  <span style={{ fontSize: 12, color: "#8a9ab5", fontWeight: 600, textTransform: "uppercase", letterSpacing: 1 }}>or paste text</span>
+                  <div style={{ flex: 1, height: 1, background: "#e0e5ec" }} />
+                </div>
+
+                {/* Pasted Text */}
+                <div style={{ marginBottom: 0 }}>
+                  <label style={S.label}>Paste Conditions Text</label>
+                  <textarea
+                    style={S.textarea}
+                    placeholder="Paste the full underwriter or lender conditions email here..."
+                    value={form.conditions_text}
+                    onChange={(e) => updateField("conditions_text", e.target.value)}
+                  />
+                </div>
+              </div>
+
+              {/* Section 2: Loan Parties */}
+              <div style={S.card}>
+                <div style={S.cardTitle}>Loan Parties</div>
+
+                <div style={S.fieldGroup}>
+                  <label style={S.label}>Borrower First Name *</label>
+                  <input
+                    style={{ ...S.input, borderColor: errors.borrower_name ? "#c0392b" : "#cfd7e0" }}
+                    value={form.borrower_name}
+                    onChange={(e) => updateField("borrower_name", e.target.value)}
+                    placeholder="e.g. Sarah"
+                  />
+                  {errors.borrower_name && <div style={S.error}>{errors.borrower_name}</div>}
+                </div>
+                <div style={{ ...S.row, ...S.fieldGroup }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={S.label}>Agent First Name</label>
+                    <input style={S.input} value={form.agent_name} onChange={(e) => updateField("agent_name", e.target.value)} placeholder="e.g. Jamie" />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={S.label}>Processor First Name</label>
+                    <input style={S.input} value={form.processor_name} onChange={(e) => updateField("processor_name", e.target.value)} placeholder="e.g. Alex" />
+                  </div>
+                </div>
+
+                {showWarning && (
+                  <div style={S.warning}>
+                    Tip: Add agent and processor names for fully personalized emails.
+                  </div>
+                )}
+              </div>
+
+              {/* Section 3: Instructions & Submit */}
+              <div style={S.card}>
+                <div style={S.cardTitle}>Instructions & Generate</div>
+
+                <div style={{ marginBottom: 20 }}>
+                  <label style={S.label}>Special Instructions</label>
+                  <textarea
+                    style={{ ...S.textarea, minHeight: 70 }}
+                    placeholder="Any tone adjustments, extra disclosures, or internal notes..."
+                    value={form.special_instructions}
+                    onChange={(e) => updateField("special_instructions", e.target.value)}
+                  />
+                </div>
+
+                <button
+                  style={{ ...S.btn, ...(isLoading ? S.btnDisabled : {}) }}
+                  onClick={handleSubmit}
+                  disabled={isLoading}
+                >
+                  {isLoading && <span style={S.spinner} />}
+                  {isLoading ? "Generating..." : "Generate Conditions Emails"}
+                </button>
+
+                {error && (
+                  <div style={{ ...S.error, marginTop: 14, fontSize: 14, padding: "10px 14px", background: "#fdecea", borderRadius: 6 }}>
+                    Error: {error}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* ---------- RIGHT: OUTPUT ---------- */}
+            <div style={S.outputCol}>
+              {!result && !isLoading && (
+                <div style={{ ...S.card, textAlign: "center", padding: "60px 28px", color: "#8a9ab5" }}>
+                  <div style={{ fontSize: 40, marginBottom: 12 }}>&#9993;</div>
+                  <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>No results yet</div>
+                  <div style={{ fontSize: 14 }}>Fill out the form and click "Generate" to create condition emails.</div>
+                </div>
+              )}
+
+              {isLoading && (
+                <div style={{ ...S.card, textAlign: "center", padding: "60px 28px" }}>
+                  <div style={{ ...S.spinner, width: 32, height: 32, borderWidth: 4, marginRight: 0, borderColor: "rgba(26,95,168,0.2)", borderTopColor: "#1a5fa8" }} />
+                  <div style={{ marginTop: 16, fontSize: 15, fontWeight: 600, color: "#1a5fa8" }}>Analyzing conditions and drafting emails...</div>
+                  <div style={{ marginTop: 6, fontSize: 13, color: "#8a9ab5" }}>This may take a moment</div>
+                </div>
+              )}
+
+              {result && (
+                <div style={S.card}>
+                  {/* Tabs */}
+                  <div style={S.tabs}>
+                    {tabLabels.map((label, i) => (
+                      <button key={i} style={S.tab(activeTab === i)} onClick={() => setActiveTab(i)}>
+                        {label}
+                        {i === 0 && <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.7 }}>({result.conditions.length})</span>}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Tab 0: Conditions Table */}
+                  {activeTab === 0 && (
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={S.table}>
+                        <thead>
+                          <tr>
+                            <th style={{ ...S.th, width: 36 }}>#</th>
+                            <th style={S.th}>Condition</th>
+                            <th style={{ ...S.th, width: 110 }}>Party</th>
+                            <th style={{ ...S.th, width: 220 }}>Reasoning</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {result.conditions.map((c) => (
+                            <tr key={c.id}>
+                              <td style={{ ...S.td, fontWeight: 600, color: "#8a9ab5" }}>{c.id}</td>
+                              <td style={S.td}>{c.description}</td>
+                              <td style={S.td}><span style={S.badge(c.party)}>{c.party}</span></td>
+                              <td style={{ ...S.td, fontSize: 13, color: "#6b7c8d" }}>{c.reasoning}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {/* Tab 1: Summary */}
+                  {activeTab === 1 && (
+                    <div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: "#0f2b46", marginBottom: 14 }}>Internal Summary for Loan Officer</div>
+                      <ul style={S.summaryList}>
+                        {result.internal_summary.map((item, i) => (
+                          <li key={i} style={S.summaryItem}>
+                            <span style={{ position: "absolute", left: 0, color: "#1a5fa8", fontWeight: 700 }}>&bull;</span>
+                            {item}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Tab 2: Emails */}
+                  {activeTab === 2 && (
+                    <div>
+                      {[
+                        { key: "borrower", label: "Email to Borrower", color: "#1a5fa8" },
+                        { key: "agent", label: "Email to Agent", color: "#1a7a42" },
+                        { key: "processor", label: "Email to Processor (Internal)", color: "#b86e00" },
+                      ].map(({ key, label, color }) => {
+                        const email = result.emails[key];
+                        if (email.skip) {
+                          return (
+                            <div key={key} style={S.emailCard}>
+                              <div style={{ ...S.emailLabel, color }}>{label}</div>
+                              <span style={S.skipBadge}>No action items — skip this email</span>
+                            </div>
+                          );
+                        }
+                        return (
+                          <div key={key} style={S.emailCard}>
+                            <div style={{ ...S.emailLabel, color }}>{label}</div>
+                            <div style={S.emailSubject}>Subject: {email.subject}</div>
+                            <div style={S.emailBody}>{email.body}</div>
+                            <CopyButton text={`Subject: ${email.subject}\n\n${email.body}`} />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
