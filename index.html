@@ -414,7 +414,8 @@ ${form.conditions_text || "None provided"}`;
         setTimeout(() => setApiKeySaved(false), 2000);
       }, [apiKeyInput]);
 
-      const tabLabels = ["Conditions", "Summary", "Emails"];
+      const resultTabLabels = ["Conditions", "Summary", "Emails"];
+      const [pageTab, setPageTab] = useState(0); // 0 = Generate, 1 = Settings
 
       return (
         <div style={S.app}>
@@ -423,17 +424,32 @@ ${form.conditions_text || "None provided"}`;
 
           {/* Header */}
           <div style={S.header}>
-            <div>
+            <div style={{ flex: 1 }}>
               <div style={S.headerTitle}>Mortgage Conditions Email Generator</div>
               <div style={S.headerSub}>Parse conditions, assign tasks, draft emails — powered by AI</div>
             </div>
+            {/* Top-level page tabs */}
+            <div style={{ display: "flex", gap: 4 }}>
+              {["Generate", "Settings"].map((label, i) => (
+                <button
+                  key={i}
+                  onClick={() => setPageTab(i)}
+                  style={{
+                    padding: "8px 18px", fontSize: 13, fontWeight: 600, borderRadius: 6,
+                    border: "none", cursor: "pointer", transition: "all 0.15s",
+                    background: pageTab === i ? "rgba(255,255,255,0.25)" : "transparent",
+                    color: "#fff",
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
 
-          {/* Layout */}
-          <div style={S.layout}>
-            {/* ---------- LEFT: FORM ---------- */}
-            <div style={S.formCol}>
-              {/* Section 0: Settings (API Key) */}
+          {/* ---- SETTINGS PAGE ---- */}
+          {pageTab === 1 && (
+            <div style={{ maxWidth: 480, margin: "40px auto", padding: "0 32px" }}>
               <div style={S.card}>
                 <div style={S.cardTitle}>Settings</div>
 
@@ -447,22 +463,29 @@ ${form.conditions_text || "None provided"}`;
                     placeholder="sk-ant-..."
                   />
                   <div style={{ fontSize: 12, color: "#6b7c8d", marginTop: 6 }}>
-                    Get a key at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer" style={{ color: "#1a5fa8", textDecoration: "none" }}>console.anthropic.com</a>
+                    Get a key at{" "}
+                    <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer" style={{ color: "#1a5fa8" }}>
+                      console.anthropic.com
+                    </a>
                   </div>
                 </div>
 
-                <button
-                  style={{ ...S.btn, marginBottom: 12 }}
-                  onClick={handleSaveApiKey}
-                >
-                  {apiKeySaved ? "✓ Saved" : "Save API Key"}
+                <button style={{ ...S.btn, marginBottom: 12 }} onClick={handleSaveApiKey}>
+                  {apiKeySaved ? "✓ Saved!" : "Save API Key"}
                 </button>
 
                 <div style={{ fontSize: 12, color: "#6b7c8d", lineHeight: 1.6 }}>
-                  Your API key is stored only in your browser's local storage and never sent to any server except api.anthropic.com. Refresh the page to clear it.
+                  Your API key is stored only in your browser's local storage and never sent anywhere except api.anthropic.com directly. It is never hardcoded or deployed with the app.
                 </div>
               </div>
+            </div>
+          )}
 
+          {/* ---- GENERATE PAGE ---- */}
+          {pageTab === 0 && (
+          <div style={S.layout}>
+            {/* ---------- LEFT: FORM ---------- */}
+            <div style={S.formCol}>
               {/* Section 1: Conditions Source */}
               <div style={S.card}>
                 <div style={S.cardTitle}>Conditions Source</div>
@@ -635,7 +658,7 @@ ${form.conditions_text || "None provided"}`;
                 <div style={S.card}>
                   {/* Tabs */}
                   <div style={S.tabs}>
-                    {tabLabels.map((label, i) => (
+                    {resultTabLabels.map((label, i) => (
                       <button key={i} style={S.tab(activeTab === i)} onClick={() => setActiveTab(i)}>
                         {label}
                         {i === 0 && <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.7 }}>({result.conditions.length})</span>}
@@ -717,6 +740,7 @@ ${form.conditions_text || "None provided"}`;
               )}
             </div>
           </div>
+          )} {/* end pageTab === 0 */}
         </div>
       );
     }
