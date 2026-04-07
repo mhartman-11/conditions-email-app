@@ -20,6 +20,13 @@
     const { useState, useCallback, useRef } = React;
 
     /* ------------------------------------------------------------------ */
+    /*  ANTHROPIC API CONFIG                                              */
+    /* ------------------------------------------------------------------ */
+    // API key is now stored in browser localStorage (set in Settings tab)
+    // Never hardcoded in the source — this keeps the key safe when deployed
+    const ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";
+
+    /* ------------------------------------------------------------------ */
     /*  FILE READING HELPER                                               */
     /* ------------------------------------------------------------------ */
     function readFileAsText(file) {
@@ -38,14 +45,38 @@
           try {
             const typedArray = new Uint8Array(e.target.result);
             const pdf = await pdfjsLib.getDocument({ data: typedArray }).promise;
+            if (!pdf.numPages) {
+              return reject(new Error("PDF contains no pages."));
+            }
             const pages = [];
             for (let i = 1; i <= pdf.numPages; i++) {
               const page = await pdf.getPage(i);
               const content = await page.getTextContent();
-              const text = content.items.map((item) => item.str).join(" ");
-              pages.push(text);
+              // Reconstruct lines using each item's Y coordinate (transform[5]).
+              // pdf.js returns text items in reading order but joined with spaces
+              // they collapse tables/lists into one blob. Group by Y to keep rows.
+              let lastY = null;
+              let line = "";
+              const lines = [];
+              for (const item of content.items) {
+                const y = item.transform ? Math.round(item.transform[5]) : null;
+                if (lastY !== null && y !== null && y !== lastY) {
+                  lines.push(line.trim());
+                  line = "";
+                }
+                line += (line && !line.endsWith(" ") ? " " : "") + item.str;
+                lastY = y;
+              }
+              if (line.trim()) lines.push(line.trim());
+              pages.push(lines.join("\n"));
             }
-            resolve(pages.join("\n\n"));
+            const fullText = pages.join("\n\n").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+            if (fullText.length < 50) {
+              return reject(new Error(
+                "Could not extract readable text from this PDF. It may be a scanned image or photo-based PDF, which requires OCR. Try copying the conditions text into the 'Paste Conditions Text' box instead."
+              ));
+            }
+            resolve(fullText);
           } catch (err) {
             reject(new Error("Could not parse PDF: " + err.message));
           }
@@ -54,49 +85,6 @@
         reader.readAsArrayBuffer(file);
       });
     }
-
-    /* ------------------------------------------------------------------ */
-    /*  MOCK AI RESPONSE — used when no real API is wired up              */
-    /* ------------------------------------------------------------------ */
-    const MOCK_RESPONSE = {
-      conditions: [
-        { id: 1, description: "Provide most recent 2 months of bank statements for Chase checking account ending in 4821", party: "Borrower", reasoning: "Personal financial document that only the borrower can supply." },
-        { id: 2, description: "Provide written letter of explanation for credit inquiry from Capital One dated 01/15/2026", party: "Borrower", reasoning: "Only the borrower can explain their own credit activity." },
-        { id: 3, description: "Provide most recent pay stub dated within 30 days of closing", party: "Borrower", reasoning: "Employment documentation that must come from borrower." },
-        { id: 4, description: "Provide copy of the executed contract extension reflecting the new closing date of 03/25/2026", party: "Agent", reasoning: "Contract modifications are handled through the real estate agent." },
-        { id: 5, description: "Provide updated seller credit addendum reflecting $4,500 seller concession", party: "Agent", reasoning: "Seller credits and contract addenda are negotiated through the agent." },
-        { id: 6, description: "Order updated VOE (Verification of Employment) for borrower's current employer", party: "Processor", reasoning: "Internal verification ordering is a processor task." },
-        { id: 7, description: "Follow up with title company for updated title commitment reflecting lien payoff", party: "Processor", reasoning: "Title/escrow coordination is handled internally by the processor." },
-        { id: 8, description: "Provide HOA dues statement showing current payment status", party: "Borrower", reasoning: "HOA statement is a personal document the borrower must request from their HOA." },
-        { id: 9, description: "Obtain termite inspection clearance letter", party: "Agent", reasoning: "Property inspection access and reports are coordinated through the agent." },
-        { id: 10, description: "Clear MERS registration and update loan number in system", party: "Processor", reasoning: "Internal system updates are processor responsibilities." },
-      ],
-      internal_summary: [
-        "4 items assigned to Borrower — bank statements, pay stub, LOE for credit inquiry, and HOA statement.",
-        "3 items assigned to Agent — contract extension, seller credit addendum, and termite inspection.",
-        "3 items assigned to Processor — VOE ordering, title follow-up, and MERS registration.",
-        "Contract extension and seller credit addendum should be requested together from the agent to avoid multiple touchpoints.",
-        "Pay stub must be dated within 30 days of closing (03/25/2026) — time-sensitive.",
-        "No ambiguous assignments; all items clearly fall within one party's responsibility.",
-      ],
-      emails: {
-        borrower: {
-          skip: false,
-          subject: "Re: Your Mortgage Conditions — Action Items Needed",
-          body: "Hi Sarah,\n\nThank you for your patience as we work through the final steps of your loan approval. The underwriter has come back with a few items we'll need from you to keep things moving smoothly.\n\nHere's what we need:\n\n- Most recent 2 months of bank statements for your Chase checking account ending in 4821\n- A written letter of explanation for the credit inquiry from Capital One dated 01/15/2026 (just a brief note explaining the reason for the inquiry)\n- Your most recent pay stub (must be dated within 30 days of our closing date, 03/25/2026)\n- HOA dues statement showing your current payment status\n\nPlease send these items at your earliest convenience so we can stay on track for closing. If you have any questions about any of these items, don't hesitate to reach out.\n\nThank you!\n"
-        },
-        agent: {
-          skip: false,
-          subject: "Re: Mortgage Conditions — Contract & Inspection Items",
-          body: "Hi Jamie,\n\nHope you're doing well! We have a few items from the underwriter that we'll need your help with:\n\n- Executed contract extension reflecting the new closing date of 03/25/2026\n- Updated seller credit addendum reflecting the $4,500 seller concession\n- Termite inspection clearance letter\n\nIf you could send these over as soon as they're available, that would be great. We want to make sure we stay on schedule for closing.\n\nThanks so much!\n"
-        },
-        processor: {
-          skip: false,
-          subject: "Re: Mortgage Conditions — Internal Tasks",
-          body: "Hi Alex,\n\nHere are the internal items we need to take care of from the latest conditions list:\n\n- Order updated VOE (Verification of Employment) for borrower's current employer\n- Follow up with title company for updated title commitment reflecting lien payoff\n- Clear MERS registration and update loan number in system\n\nThe contract extension and seller credit addendum have been requested from the agent. Pay stub from borrower is time-sensitive (must be within 30 days of 03/25 closing).\n\nPlease prioritize the VOE and title follow-up. Let me know if you run into any issues.\n\nThanks!\n"
-        }
-      }
-    };
 
     /* ------------------------------------------------------------------ */
     /*  STYLES                                                            */
@@ -155,6 +143,10 @@ You will receive:
 
 You must read all the provided conditions content as your primary source.
 
+The borrower, agent, and processor first names are provided in the user message. Use these names verbatim in the email greetings. NEVER invent or guess names. If a name is "Not provided", use a neutral greeting like "Hi there".
+
+If the file contents look empty, garbled, unrelated to a mortgage conditions list, or you cannot identify any actionable conditions, return ONLY this JSON: {"error": "<plain-english explanation of what you saw and why you cannot proceed>"}. Do not fabricate conditions.
+
 Your job:
 1. Read the entire conditions content from the referenced attachment, plus any additional
    pasted text, even if the file has formatting artifacts.
@@ -209,12 +201,14 @@ REQUIRED OUTPUT FORMAT — return valid JSON only, no markdown fences, no extra 
     }
 
     function buildUserMessage(form) {
+      const fileLen = (form.uploadedFileContent || "").length;
       return `Borrower Name: ${form.borrower_name}
 Agent Name: ${form.agent_name || "Not provided"}
 Processor Name: ${form.processor_name || "Not provided"}
 Special Instructions: ${form.special_instructions || "None"}
 
 Uploaded File: ${form.uploadedFileName || "None"}
+File character count: ${fileLen}
 
 --- BEGIN FILE CONTENTS ---
 ${form.uploadedFileContent || "(No file content extracted)"}
@@ -225,42 +219,50 @@ ${form.conditions_text || "None provided"}`;
     }
 
     /* ------------------------------------------------------------------ */
-    /*  CALL AI — replace mock with real Anthropic SDK call                */
+    /*  CALL AI — fetch from localStorage instead of hardcoded key         */
     /* ------------------------------------------------------------------ */
     async function callAI(form) {
-      /*
-       * ============================================================
-       * TO WIRE UP A REAL API CALL:
-       * ============================================================
-       * import Anthropic from '@anthropic-ai/sdk';
-       * const client = new Anthropic({ apiKey: 'YOUR_KEY' });
-       *
-       * const response = await client.messages.create({
-       *   model: "claude-sonnet-4-5-20250514",
-       *   max_tokens: 4096,
-       *   system: buildSystemPrompt(),
-       *   messages: [{ role: "user", content: buildUserMessage(form) }],
-       * });
-       *
-       * const text = response.content[0].text;
-       * return JSON.parse(text);
-       * ============================================================
-       */
+      const apiKey = localStorage.getItem("anthropic_api_key");
+      if (!apiKey) {
+        throw new Error("API key not configured. Please go to the Settings tab to add your Anthropic API key.");
+      }
 
-      // MOCK: simulate network delay then return mock data
-      await new Promise((r) => setTimeout(r, 1800));
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({
+          model: ANTHROPIC_MODEL,
+          max_tokens: 4096,
+          system: buildSystemPrompt(),
+          messages: [{ role: "user", content: buildUserMessage(form) }],
+        }),
+      });
 
-      // Personalize the mock response with actual form names
-      const res = JSON.parse(JSON.stringify(MOCK_RESPONSE));
-      const bName = form.borrower_name || "there";
-      const aName = form.agent_name || "there";
-      const pName = form.processor_name || "there";
+      if (!response.ok) {
+        const errText = await response.text();
+        let detail = errText;
+        try { detail = JSON.parse(errText).error?.message || errText; } catch (_) {}
+        throw new Error(`Anthropic API error (${response.status}): ${detail}`);
+      }
 
-      res.emails.borrower.body = res.emails.borrower.body.replace("Hi Sarah", `Hi ${bName}`);
-      res.emails.agent.body = res.emails.agent.body.replace("Hi Jamie", `Hi ${aName}`);
-      res.emails.processor.body = res.emails.processor.body.replace("Hi Alex", `Hi ${pName}`);
+      const data = await response.json();
+      const text = data?.content?.[0]?.text;
+      if (!text) {
+        throw new Error("Anthropic API returned an empty response.");
+      }
 
-      return res;
+      // Strip markdown code fences if Claude wrapped them despite instructions
+      const cleaned = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+      try {
+        return JSON.parse(cleaned);
+      } catch (err) {
+        throw new Error("Could not parse AI response as JSON. Raw response: " + text.slice(0, 500));
+      }
     }
 
     /* ------------------------------------------------------------------ */
@@ -301,7 +303,17 @@ ${form.conditions_text || "None provided"}`;
       const [error, setError] = useState(null);
       const [result, setResult] = useState(null);
       const [activeTab, setActiveTab] = useState(0);
+      const [apiKeyInput, setApiKeyInput] = useState("");
+      const [apiKeySaved, setApiKeySaved] = useState(false);
       const fileInputRef = useRef(null);
+
+      // Load API key from localStorage on mount
+      React.useEffect(() => {
+        const saved = localStorage.getItem("anthropic_api_key");
+        if (saved) {
+          setApiKeyInput(saved);
+        }
+      }, []);
 
       const updateField = useCallback((field, value) => {
         setForm((prev) => ({ ...prev, [field]: value }));
@@ -379,14 +391,28 @@ ${form.conditions_text || "None provided"}`;
         setResult(null);
         try {
           const data = await callAI(form);
-          setResult(data);
-          setActiveTab(0);
+          if (data && data.error) {
+            setError(data.error);
+          } else {
+            setResult(data);
+            setActiveTab(0); // Show Conditions table first
+          }
         } catch (err) {
           setError(err.message || "An unexpected error occurred.");
         } finally {
           setIsLoading(false);
         }
       }, [form, validate]);
+
+      const handleSaveApiKey = useCallback(() => {
+        if (!apiKeyInput.trim()) {
+          alert("Please enter an API key.");
+          return;
+        }
+        localStorage.setItem("anthropic_api_key", apiKeyInput);
+        setApiKeySaved(true);
+        setTimeout(() => setApiKeySaved(false), 2000);
+      }, [apiKeyInput]);
 
       const tabLabels = ["Conditions", "Summary", "Emails"];
 
@@ -407,6 +433,36 @@ ${form.conditions_text || "None provided"}`;
           <div style={S.layout}>
             {/* ---------- LEFT: FORM ---------- */}
             <div style={S.formCol}>
+              {/* Section 0: Settings (API Key) */}
+              <div style={S.card}>
+                <div style={S.cardTitle}>Settings</div>
+
+                <div style={S.fieldGroup}>
+                  <label style={S.label}>Anthropic API Key</label>
+                  <input
+                    type="password"
+                    style={S.input}
+                    value={apiKeyInput}
+                    onChange={(e) => setApiKeyInput(e.target.value)}
+                    placeholder="sk-ant-..."
+                  />
+                  <div style={{ fontSize: 12, color: "#6b7c8d", marginTop: 6 }}>
+                    Get a key at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer" style={{ color: "#1a5fa8", textDecoration: "none" }}>console.anthropic.com</a>
+                  </div>
+                </div>
+
+                <button
+                  style={{ ...S.btn, marginBottom: 12 }}
+                  onClick={handleSaveApiKey}
+                >
+                  {apiKeySaved ? "✓ Saved" : "Save API Key"}
+                </button>
+
+                <div style={{ fontSize: 12, color: "#6b7c8d", lineHeight: 1.6 }}>
+                  Your API key is stored only in your browser's local storage and never sent to any server except api.anthropic.com. Refresh the page to clear it.
+                </div>
+              </div>
+
               {/* Section 1: Conditions Source */}
               <div style={S.card}>
                 <div style={S.cardTitle}>Conditions Source</div>
