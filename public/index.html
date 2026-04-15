@@ -59,6 +59,7 @@
               let line = "";
               const lines = [];
               for (const item of content.items) {
+                if (!('str' in item)) continue; // skip MarkedContent items (no text)
                 const y = item.transform ? Math.round(item.transform[5]) : null;
                 if (lastY !== null && y !== null && y !== lastY) {
                   lines.push(line.trim());
@@ -360,7 +361,7 @@ ${form.conditions_text || "None provided"}`;
             uploadedFileContent: content,
           }));
         } catch (err) {
-          setErrors((prev) => ({ ...prev, uploadedFile: "Could not read file. Try pasting the text instead." }));
+          setErrors((prev) => ({ ...prev, uploadedFile: err.message || "Could not read file. Try pasting the text instead." }));
         } finally {
           setIsFileLoading(false);
         }
