@@ -7,8 +7,6 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-  <script>pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";</script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f4f6f9; color: #1a2a3a; line-height: 1.5; }
@@ -38,56 +36,21 @@
       });
     }
 
-    function readPdfAsText(file) {
+    function readFileAsPdfBase64(file) {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
-        reader.onload = async (e) => {
-          try {
-            const typedArray = new Uint8Array(e.target.result);
-            const pdf = await pdfjsLib.getDocument({ data: typedArray }).promise;
-            if (!pdf.numPages) {
-              return reject(new Error("PDF contains no pages."));
-            }
-            const pages = [];
-            for (let i = 1; i <= pdf.numPages; i++) {
-              const page = await pdf.getPage(i);
-              const content = await page.getTextContent();
-              // Reconstruct lines using each item's Y coordinate (transform[5]).
-              // pdf.js returns text items in reading order but joined with spaces
-              // they collapse tables/lists into one blob. Group by Y to keep rows.
-              let lastY = null;
-              let line = "";
-              const lines = [];
-              for (const item of content.items) {
-                if (!('str' in item)) continue; // skip MarkedContent items (no text)
-                const y = item.transform ? Math.round(item.transform[5]) : null;
-                if (lastY !== null && y !== null && y !== lastY) {
-                  lines.push(line.trim());
-                  line = "";
-                }
-                line += (line && !line.endsWith(" ") ? " " : "") + item.str;
-                lastY = y;
-              }
-              if (line.trim()) lines.push(line.trim());
-              pages.push(lines.join("\n"));
-            }
-            const fullText = pages.join("\n\n").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
-            if (fullText.length < 50) {
-              return reject(new Error(
-                "Could not extract readable text from this PDF. It may be a scanned image or photo-based PDF, which requires OCR. Try copying the conditions text into the 'Paste Conditions Text' box instead."
-              ));
-            }
-            resolve(fullText);
-          } catch (err) {
-            reject(new Error("Could not parse PDF: " + err.message));
-          }
+        reader.onload = (e) => {
+          const bytes = new Uint8Array(e.target.result);
+          let binary = "";
+          for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+          resolve(btoa(binary));
         };
-        reader.onerror = () => reject(new Error("Failed to read file."));
+        reader.onerror = () => reject(new Error("Failed to read PDF file."));
         reader.readAsArrayBuffer(file);
       });
     }
 
-    /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
     /*  STYLES                                                            */
     /* ------------------------------------------------------------------ */
     const S = {
@@ -202,18 +165,22 @@ REQUIRED OUTPUT FORMAT — return valid JSON only, no markdown fences, no extra 
     }
 
     function buildUserMessage(form) {
+      const isPdf = !!form.uploadedFilePdfBase64;
       const fileLen = (form.uploadedFileContent || "").length;
+      const fileSection = isPdf
+        ? `Uploaded File: ${form.uploadedFileName} (PDF attached above — read it directly for conditions)`
+        : `Uploaded File: ${form.uploadedFileName || "None"}
+File character count: ${fileLen}
+
+--- BEGIN FILE CONTENTS ---
+${form.uploadedFileContent || "(No file content extracted)"}
+--- END FILE CONTENTS ---`;
       return `Borrower Name: ${form.borrower_name}
 Agent Name: ${form.agent_name || "Not provided"}
 Processor Name: ${form.processor_name || "Not provided"}
 Special Instructions: ${form.special_instructions || "None"}
 
-Uploaded File: ${form.uploadedFileName || "None"}
-File character count: ${fileLen}
-
---- BEGIN FILE CONTENTS ---
-${form.uploadedFileContent || "(No file content extracted)"}
---- END FILE CONTENTS ---
+${fileSection}
 
 Additional Pasted Conditions Text (optional):
 ${form.conditions_text || "None provided"}`;
@@ -240,7 +207,15 @@ ${form.conditions_text || "None provided"}`;
           model: ANTHROPIC_MODEL,
           max_tokens: 4096,
           system: buildSystemPrompt(),
-          messages: [{ role: "user", content: buildUserMessage(form) }],
+          messages: [{
+            role: "user",
+            content: form.uploadedFilePdfBase64
+              ? [
+                  { type: "document", source: { type: "base64", media_type: "application/pdf", data: form.uploadedFilePdfBase64 } },
+                  { type: "text", text: buildUserMessage(form) },
+                ]
+              : buildUserMessage(form),
+          }],
         }),
       });
 
@@ -291,6 +266,7 @@ ${form.conditions_text || "None provided"}`;
       const [form, setForm] = useState({
         uploadedFileName: "",
         uploadedFileContent: "",
+        uploadedFilePdfBase64: "",
         conditions_text: "",
         borrower_name: "",
         agent_name: "",
@@ -349,7 +325,15 @@ ${form.conditions_text || "None provided"}`;
               content = "(DOCX parsing limited in browser. Please also paste the conditions text below for best results.)\n\nRaw extract:\n" + content;
             }
           } else if (ext === "pdf") {
-            content = await readPdfAsText(file);
+            const pdfBase64 = await readFileAsPdfBase64(file);
+            setForm((prev) => ({
+              ...prev,
+              uploadedFileName: name,
+              uploadedFileContent: "",
+              uploadedFilePdfBase64: pdfBase64,
+            }));
+            setIsFileLoading(false);
+            return;
           } else {
             // Try reading as text for any other file type
             content = await readFileAsText(file);
@@ -368,7 +352,7 @@ ${form.conditions_text || "None provided"}`;
       }, []);
 
       const handleRemoveFile = useCallback(() => {
-        setForm((prev) => ({ ...prev, uploadedFileName: "", uploadedFileContent: "" }));
+        setForm((prev) => ({ ...prev, uploadedFileName: "", uploadedFileContent: "", uploadedFilePdfBase64: "" }));
         if (fileInputRef.current) fileInputRef.current.value = "";
         setResult(null);
         setError(null);
